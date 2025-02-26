@@ -11,7 +11,7 @@ import asyncio
 import os
 
 API_TOKEN = '7172571551:AAHLwDIPluMe-cOA3aMmqDmZz1zapbQLdBM'
-ADMIN_CHAT_ID = 846839155  # Замените на ID администратора
+ADMIN_CHAT_ID = 5072441946  # Замените на ID администратора
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -130,10 +130,10 @@ async def handle_links(message: types.Message):
         url = 'https://houseprokat.ru/'
         text = "Перейдите по ссылке, чтобы узнать цены проката инвентаря:"
     elif message.text == 'Условия проката':
-        url = 'https://houseprokat.ru/'
+        url = 'https://houseprokat.ru/faq/'
         text = "Перейдите по ссылке, чтобы ознакомиться с условиями проката:"
     elif message.text == 'Ski-сервис':
-        url = 'https://houseprokat.ru/'
+        url = 'https://houseprokat.ru/ski-service/'
         text = "Перейдите по ссылке, чтобы узнать о нашем Ski-сервисе:"
 
     # Отправляем сообщение с предложением перейти по ссылке
@@ -373,7 +373,7 @@ async def process_phone(message: types.Message, state: FSMContext):
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(Form.choose_date)
-    await message.answer("Введите дату бронирования (в формате ДД.ММ.ГГГГ):")
+    await message.answer("Введите дату когда Вы планируете взять инвентарь (в формате ДД.ММ.ГГГГ):")
 
 # Обработка выбора даты
 @dp.message(Form.choose_date)
