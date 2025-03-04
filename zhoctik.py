@@ -9,6 +9,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime, timedelta
 import asyncio
 import os
+import uuid  # Для генерации уникальных ID
+from aiogram.types import FSInputFile
+from PIL import Image
 
 API_TOKEN = '7172571551:AAHLwDIPluMe-cOA3aMmqDmZz1zapbQLdBM'
 ADMIN_CHAT_ID = 5072441946  # Замените на ID администратора
@@ -70,7 +73,7 @@ async def cmd_start(message: types.Message):
             [KeyboardButton(text='Цены проката инвентаря')],
             [KeyboardButton(text='Условия проката')],
             [KeyboardButton(text='Ski-сервис')],
-            [KeyboardButton(text='Мои брони')]  # Убрали кнопку "Отменить бронь"
+            [KeyboardButton(text='Мои брони')]
         ],
         resize_keyboard=True
     )
@@ -127,14 +130,19 @@ async def cancel_booking(callback_query: types.CallbackQuery):
 @dp.message(lambda message: message.text in ['Цены проката инвентаря', 'Условия проката', 'Ski-сервис'])
 async def handle_links(message: types.Message):
     if message.text == 'Цены проката инвентаря':
-        url = 'https://houseprokat.ru/'
-        text = "Перейдите по ссылке, чтобы узнать цены проката инвентаря:"
+        # Отправляем фотографию с ценами
+        photo = FSInputFile("price.png")  
+        await message.answer_photo(photo, caption="Цены сезона 2024/2025")
     elif message.text == 'Условия проката':
         url = 'https://houseprokat.ru/faq/'
         text = "Перейдите по ссылке, чтобы ознакомиться с условиями проката:"
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти по ссылке", url=url)]])
+        await message.answer(text, reply_markup=markup)
     elif message.text == 'Ski-сервис':
         url = 'https://houseprokat.ru/ski-service/'
         text = "Перейдите по ссылке, чтобы узнать о нашем Ski-сервисе:"
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти по ссылке", url=url)]])
+        await message.answer(text, reply_markup=markup)
 
     # Отправляем сообщение с предложением перейти по ссылке
     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти по ссылке", url=url)]])
@@ -373,7 +381,7 @@ async def process_phone(message: types.Message, state: FSMContext):
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(Form.choose_date)
-    await message.answer("Введите дату когда Вы планируете взять инвентарь (в формате ДД.ММ.ГГГГ):")
+    await message.answer("Введите дату бронирования (в формате ДД.ММ.ГГГГ):")
 
 # Обработка выбора даты
 @dp.message(Form.choose_date)
@@ -441,6 +449,15 @@ async def process_photos(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     booking_id = str(message.from_user.id)
+
+    # Добавляем уникальный идентификатор для бронирования
+    data['id'] = str(uuid.uuid4())  # Генерируем уникальный ID
+    data['status'] = 'pending'  # Устанавливаем статус по умолчанию
+
+    # Сохраняем данные
+    if booking_id not in user_bookings:
+        user_bookings[booking_id] = []
+    user_bookings[booking_id].append(data)
 
     # Формируем сводку данных
     summary_message = "Ваши заказы:\n\n"
@@ -553,7 +570,7 @@ async def process_photos(message: types.Message, state: FSMContext):
         f"Дата: {data['date']}\n"
         f"Время: {data['time']}\n"
         f"Комментарий: {data['comment']}\n"
-        f"ID пользователя: {booking_id}"
+        f"ID брони: {data['id']}"
     )
 
     # Отправляем фотографии администратору
@@ -562,20 +579,16 @@ async def process_photos(message: types.Message, state: FSMContext):
         media_group = [InputMediaPhoto(media=photo) for photo in photos]
         await bot.send_media_group(ADMIN_CHAT_ID, media=media_group)
 
+    # Добавляем кнопки для подтверждения или отклонения брони
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Подтвердить", callback_data=f"confirm_{booking_id}")],
-        [InlineKeyboardButton(text="Отклонить", callback_data=f"reject_{booking_id}")]
+        [InlineKeyboardButton(text="Подтвердить", callback_data=f"confirm_{data['id']}")],
+        [InlineKeyboardButton(text="Отклонить", callback_data=f"reject_{data['id']}")]
     ])
     await bot.send_message(ADMIN_CHAT_ID, admin_message, reply_markup=markup)
 
     # Очищаем данные пользователя после отправки заявки
     if booking_id in bookings:
         del bookings[booking_id]
-
-    # Сохраняем заявку пользователя
-    if booking_id not in user_bookings:
-        user_bookings[booking_id] = []
-    user_bookings[booking_id].append(data)
 
     # Сохраняем данные в файл
     save_data({"bookings": bookings, "user_bookings": user_bookings})
@@ -589,28 +602,134 @@ async def process_photos(message: types.Message, state: FSMContext):
 # Обработка ответа администратора
 @dp.callback_query(lambda c: c.data.startswith(('confirm_', 'reject_')))
 async def process_admin_response(callback_query: types.CallbackQuery):
-    booking_id = callback_query.data.split('_')[1]
-    user_id = int(booking_id)
-    action = callback_query.data.split('_')[0]
+    action = callback_query.data.split('_')[0]  # Получаем действие (confirm или reject)
+    booking_id = callback_query.data.split('_')[1]  # Получаем ID брони
 
-    if action == 'confirm':
-        await bot.send_message(
-            user_id,
-            "Ваша заявка на бронирование подтверждена!\n\n"
-            "Ждём вас по адресу ул. Белорусская д 4. 1 этаж. Пункт проката SkiHouse.\n\n"
-            "Напоминаем, что с собой потребуется паспорт для составления договора аренды и залог.\n"
-            "В качестве залога вы можете оставить один из документов (загранпаспорт/водительское удостоверение/военный билет), либо 10000 рублей за каждый комплект.\n\n"
-            "Также вы можете отменить бронь на главном меню в разделе 'Мои брони'.\n\n"
-            "С уважением, команда SkiHouse!"
-        )
-    elif action == 'reject':
-        await bot.send_message(user_id, "Ваша заявка отклонена. Пожалуйста, свяжитесь с администратором для уточнения деталей.")
+    # Ищем бронирование по ID
+    for user_id, bookings_list in user_bookings.items():
+        for booking in bookings_list:
+            if booking.get('id') == booking_id:
+                if action == 'confirm':
+                    status = 'confirmed'
+                    await bot.send_message(
+                        int(user_id),
+                        "Ваша заявка на бронирование подтверждена!\n\n"
+                        "Ждём вас по адресу ул. Белорусская д 4. 1 этаж. Пункт проката SkiHouse.\n\n"
+                        "Напоминаем, что с собой потребуется паспорт для составления договора аренды и залог.\n"
+                        "В качестве залога вы можете оставить один из документов (загранпаспорт/водительское удостоверение/военный билет), либо 10000 рублей за каждый комплект.\n\n"
+                        "С уважением, команда SkiHouse!"
+                    )
+                elif action == 'reject':
+                    status = 'canceled'
+                    await bot.send_message(int(user_id), "Ваша заявка отклонена. Пожалуйста, свяжитесь с администратором для уточнения деталей.")
 
+                # Обновляем статус брони
+                booking['status'] = status
+                save_data({"bookings": bookings, "user_bookings": user_bookings})
+
+                # Убираем кнопки подтверждения/отклонения
+                await callback_query.message.edit_reply_markup(reply_markup=None)
+                await callback_query.answer()
+                return
+
+    await callback_query.answer("Бронирование не найдено.")
+
+# Команда /admin для админа
+@dp.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    if message.from_user.id == ADMIN_CHAT_ID:  # Проверяем, что это админ
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Брони на ожидании", callback_data="view_pending")],
+            [InlineKeyboardButton(text="Подтвержденные брони", callback_data="view_confirmed")],
+            [InlineKeyboardButton(text="Отмененные брони", callback_data="view_canceled")]
+        ])
+        await message.answer("Выберите тип брони для просмотра:", reply_markup=markup)
+    else:
+        await message.answer("У вас нет доступа к этой команде.")
+
+@dp.callback_query(lambda c: c.data.startswith('view_'))
+async def view_bookings(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split('_')[1]  # Получаем статус (pending, confirmed, canceled)
+    user_id = callback_query.from_user.id
+
+    if user_id == ADMIN_CHAT_ID:  # Проверяем, что это админ
+        # Фильтруем брони по статусу
+        bookings_list = []
+        for user_bookings_list in user_bookings.values():  # Проходим по всем пользователям
+            for booking in user_bookings_list:  # Проходим по всем бронированиям пользователя
+                if booking.get('status') == action:  # Проверяем статус брони
+                    bookings_list.append(booking)
+
+        if not bookings_list:
+            await callback_query.message.answer("Нет броней для отображения.")
+            return
+
+        # Сохраняем текущий индекс и список броней в состоянии
+        await state.update_data(current_index=0, bookings_list=bookings_list)
+        await show_booking(callback_query.message, 0, bookings_list)
+    else:
+        await callback_query.answer("У вас нет доступа к этой команде.")
+
+async def show_booking(message: types.Message, index: int, bookings_list: list):
+    booking = bookings_list[index]
+    booking_id = booking['id']
+
+    # Формируем сообщение с информацией о брони
+    booking_message = (
+        f"Имя: {booking.get('name', 'не указано')}\n"
+        f"Телефон: {booking.get('phone', 'не указано')}\n"
+        f"Инвентарь: {booking['equipment']}\n"
+        f"Тип: {booking.get('snowboard_type', booking.get('ski_type', booking.get('cross_country_ski_type', 'не указано')))}\n"
+        f"Дата: {booking['date']}\n"
+        f"Время: {booking['time']}\n"
+        f"Комментарий: {booking['comment']}\n"
+        f"Статус: {booking.get('status', 'не указано')}"
+    )
+
+    # Создаем клавиатуру с кнопками для перелистывания
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️", callback_data=f"prev_{booking_id}"),
+         InlineKeyboardButton(text="➡️", callback_data=f"next_{booking_id}")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_admin")]
+    ])
+
+    await message.answer(booking_message, reply_markup=markup)
+
+@dp.callback_query(lambda c: c.data.startswith(('prev_', 'next_')))
+async def navigate_bookings(callback_query: types.CallbackQuery, state: FSMContext):
+    action = callback_query.data.split('_')[0]  # Получаем действие (prev или next)
+    booking_id = callback_query.data.split('_')[1]  # Получаем ID брони
+
+    data = await state.get_data()
+    current_index = data.get('current_index', 0)
+    bookings_list = data.get('bookings_list', [])
+
+    if action == "prev":
+        current_index = max(0, current_index - 1)  # Переход к предыдущей брони
+    elif action == "next":
+        current_index = min(len(bookings_list) - 1, current_index + 1)  # Переход к следующей брони
+
+    await state.update_data(current_index=current_index)
+    await show_booking(callback_query.message, current_index, bookings_list)
+    await callback_query.answer()
+
+@dp.callback_query(lambda c: c.data == "back_to_admin")
+async def back_to_admin(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id == ADMIN_CHAT_ID:  # Проверяем, что это админ
+        # Отправляем админу главное меню
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Брони на ожидании", callback_data="view_pending")],
+            [InlineKeyboardButton(text="Подтвержденные брони", callback_data="view_confirmed")],
+            [InlineKeyboardButton(text="Отмененные брони", callback_data="view_canceled")]
+        ])
+        await callback_query.message.answer("Выберите тип брони для просмотра:", reply_markup=markup)
+    else:
+        await callback_query.answer("У вас нет доступа к этой команде.")
     await callback_query.answer()
 
 # Напоминание о брони за день до назначенной даты
 async def send_reminder(user_id, booking):
-    reminder_message =(
+    reminder_message = (
         "Напоминаем о вашем бронировании:\n\n"
         f"Инвентарь: {booking['equipment']}\n"
         f"Тип: {booking.get('snowboard_type', booking.get('ski_type', booking.get('cross_country_ski_type', 'не указано')))}\n"
