@@ -12,6 +12,7 @@ import os
 import uuid  # Для генерации уникальных ID
 from aiogram.types import FSInputFile
 from PIL import Image
+from aiogram.exceptions import TelegramNetworkError
 
 API_TOKEN = '7172571551:AAHLwDIPluMe-cOA3aMmqDmZz1zapbQLdBM'
 ADMIN_CHAT_ID = 5072441946  # Замените на ID администратора
@@ -126,27 +127,70 @@ async def cancel_booking(callback_query: types.CallbackQuery):
     else:
         await callback_query.message.answer("У вас нет активных бронирований для отмены.")
 
-# Обработка кнопок с ссылками
-@dp.message(lambda message: message.text in ['Цены проката инвентаря', 'Условия проката', 'Ski-сервис'])
-async def handle_links(message: types.Message):
-    if message.text == 'Цены проката инвентаря':
-        # Отправляем фотографию с ценами
-        photo = FSInputFile("price.png")  
-        await message.answer_photo(photo, caption="Цены сезона 2024/2025")
-    elif message.text == 'Условия проката':
-        url = 'https://houseprokat.ru/faq/'
-        text = "Перейдите по ссылке, чтобы ознакомиться с условиями проката:"
-        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти по ссылке", url=url)]])
-        await message.answer(text, reply_markup=markup)
-    elif message.text == 'Ski-сервис':
-        url = 'https://houseprokat.ru/ski-service/'
-        text = "Перейдите по ссылке, чтобы узнать о нашем Ski-сервисе:"
-        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти по ссылке", url=url)]])
-        await message.answer(text, reply_markup=markup)
+        # Путь к файлу с ценами
+PRICE_IMAGE_PATH = r"bott/price.png"
 
-    # Отправляем сообщение с предложением перейти по ссылке
-    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Перейти по ссылке", url=url)]])
+# Обработка кнопки "Цены проката инвентаря"
+@dp.message(lambda message: message.text == 'Цены проката инвентаря')
+async def handle_prices(message: types.Message):
+    try:
+        # Проверяем, существует ли файл
+        if not os.path.exists(PRICE_IMAGE_PATH):
+            await message.answer("Файл с ценами не найден.")
+            return
+
+        # Отправляем фотографию
+        photo = FSInputFile(PRICE_IMAGE_PATH)
+        await message.answer_photo(photo, caption="Цены сезона 2024/2025")
+    except FileNotFoundError:
+        await message.answer("Файл с ценами не найден.")
+    except TelegramNetworkError as e:
+        logger.error(f"Ошибка сети при отправке фотографии: {e}")
+        await message.answer("Произошла ошибка сети. Пожалуйста, попробуйте позже.")
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Обработка кнопки "Условия проката"
+@dp.message(lambda message: message.text == 'Условия проката')
+async def handle_terms(message: types.Message):
+    url = 'https://houseprokat.ru/faq/'
+    text = "Перейдите по ссылке, чтобы ознакомиться с условиями проката:"
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Перейти по ссылке", url=url)]
+    ])
     await message.answer(text, reply_markup=markup)
+
+# Обработка кнопки "Ski-сервис"
+@dp.message(lambda message: message.text == 'Ski-сервис')
+async def handle_ski_service(message: types.Message):
+    url = 'https://houseprokat.ru/ski-service/'
+    text = "Перейдите по ссылке, чтобы узнать о нашем Ski-сервисе:"
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Перейти по ссылке", url=url)]
+    ])
+    await message.answer(text, reply_markup=markup)
+
+# Обработка кнопки "Мои брони"
+@dp.message(lambda message: message.text == 'Мои брони')
+async def show_user_bookings(message: types.Message):
+    user_id = str(message.from_user.id)
+    if user_id in user_bookings and user_bookings[user_id]:
+        for booking in user_bookings[user_id]:
+            summary_message = (
+                f"Инвентарь: {booking['equipment']}\n"
+                f"Тип: {booking.get('snowboard_type', booking.get('ski_type', booking.get('cross_country_ski_type', 'не указано')))}\n"
+                f"Дата: {booking['date']}\n"
+                f"Время: {booking['time']}\n"
+                f"Комментарий: {booking['comment']}"
+            )
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Отменить бронь", callback_data=f"cancel_{booking['id']}")]
+            ])
+            await message.answer(summary_message, reply_markup=markup)
+    else:
+        await message.answer("У вас нет активных бронирований.")
+
 
 # Выбор инвентаря
 @dp.message(lambda message: message.text == 'Забронировать инвентарь')
@@ -665,12 +709,12 @@ async def view_bookings(callback_query: types.CallbackQuery, state: FSMContext):
             return
 
         # Сохраняем текущий индекс и список броней в состоянии
-        await state.update_data(current_index=0, bookings_list=bookings_list)
-        await show_booking(callback_query.message, 0, bookings_list)
+        await state.update_data(current_index=0, bookings_list=bookings_list, status=action)  # Сохраняем статус
+        await show_booking(callback_query.message, 0, bookings_list, action)  # Передаем статус
     else:
         await callback_query.answer("У вас нет доступа к этой команде.")
 
-async def show_booking(message: types.Message, index: int, bookings_list: list):
+async def show_booking(message: types.Message, index: int, bookings_list: list, status: str):
     booking = bookings_list[index]
     booking_id = booking['id']
 
@@ -693,6 +737,20 @@ async def show_booking(message: types.Message, index: int, bookings_list: list):
         [InlineKeyboardButton(text="Назад", callback_data="back_to_admin")]
     ])
 
+    # Добавляем кнопки "Подтвердить" и "Отклонить" для броней на ожидании
+    if status == "pending":
+        markup.inline_keyboard.append([
+            InlineKeyboardButton(text="Подтвердить", callback_data=f"confirm_{booking_id}"),
+            InlineKeyboardButton(text="Отклонить", callback_data=f"reject_{booking_id}")
+        ])
+
+    # Отправляем фотографии пользователя, если они есть
+    photos = booking.get('photos', [])
+    if photos:
+        media_group = [InputMediaPhoto(media=photo) for photo in photos]
+        await message.answer_media_group(media=media_group)
+
+    # Отправляем сообщение с информацией о брони
     await message.answer(booking_message, reply_markup=markup)
 
 @dp.callback_query(lambda c: c.data.startswith(('prev_', 'next_')))
@@ -703,6 +761,7 @@ async def navigate_bookings(callback_query: types.CallbackQuery, state: FSMConte
     data = await state.get_data()
     current_index = data.get('current_index', 0)
     bookings_list = data.get('bookings_list', [])
+    status = data.get('status', 'pending')  # Получаем статус из состояния
 
     if action == "prev":
         current_index = max(0, current_index - 1)  # Переход к предыдущей брони
@@ -710,9 +769,8 @@ async def navigate_bookings(callback_query: types.CallbackQuery, state: FSMConte
         current_index = min(len(bookings_list) - 1, current_index + 1)  # Переход к следующей брони
 
     await state.update_data(current_index=current_index)
-    await show_booking(callback_query.message, current_index, bookings_list)
+    await show_booking(callback_query.message, current_index, bookings_list, status)  # Передаем статус
     await callback_query.answer()
-
 @dp.callback_query(lambda c: c.data == "back_to_admin")
 async def back_to_admin(callback_query: types.CallbackQuery):
     if callback_query.from_user.id == ADMIN_CHAT_ID:  # Проверяем, что это админ
